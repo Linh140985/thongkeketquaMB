@@ -43,3 +43,4 @@ jobs:
           git add .
           git commit -m "Updated ${{ env.date }}"
           git push origin main
+# trigger enable
