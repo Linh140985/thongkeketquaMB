@@ -3,10 +3,17 @@ name: Update data
 on:
   workflow_dispatch:
   schedule:
-    - cron: '35 11 * * *' # 6:35 PM in Vietnam
+    - cron: '40 11 * * *' # 18:40 Vietnam
+    - cron: '55 11 * * *' # 18:55 Vietnam
+    - cron: '15 12 * * *' # 19:15 Vietnam
+    - cron: '45 12 * * *' # 19:45 Vietnam
 
 permissions:
   contents: write
+
+concurrency:
+  group: update-data-main
+  cancel-in-progress: false
 
 jobs:
   update-data:
@@ -15,29 +22,65 @@ jobs:
       - name: Checkout repo content
         uses: actions/checkout@v4
 
+      - name: Check whether data is already current
+        id: freshness
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, time, timedelta
+          from zoneinfo import ZoneInfo
+
+          tz = ZoneInfo('Asia/Ho_Chi_Minh')
+          now = datetime.now(tz)
+          target = now.date()
+          if now.time() < time(18, 35):
+              target -= timedelta(days=1)
+
+          with open('data/xsmb-2-digits.json', 'r', encoding='utf-8') as f:
+              data = json.load(f)
+
+          latest = max(str(r.get('date', ''))[:10] for r in data if r.get('date'))
+          target_s = target.isoformat()
+          current = latest >= target_s
+
+          print(f'Latest data: {latest}')
+          print(f'Target date: {target_s}')
+          print(f'Already current: {current}')
+
+          with open(__import__('os').environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f'current={str(current).lower()}\n')
+              out.write(f'target={target_s}\n')
+          PY
+
+      - name: Stop early when already updated
+        if: steps.freshness.outputs.current == 'true'
+        run: echo "Data already includes ${{ steps.freshness.outputs.target }}. Nothing to do."
+
       - name: Install uv
+        if: steps.freshness.outputs.current != 'true'
         uses: astral-sh/setup-uv@v4
         with:
-          enable-cache: true
+          enable-cache: false
 
-      - name: Install dependencies
+      - name: Install fetch dependencies
+        if: steps.freshness.outputs.current != 'true'
         run: uv sync --frozen --no-dev --no-install-project
 
-      - name: Fetch data
+      - name: Fetch and validate data
+        if: steps.freshness.outputs.current != 'true'
         run: uv run src/fetch.py
 
-      - name: Analyze data
-        run: uv run src/analyze.py
-
-      - name: Commit changes
+      - name: Commit data changes
+        if: steps.freshness.outputs.current != 'true'
         run: |
           if git diff --quiet; then
-            echo "No changes to commit"
-            exit 0
+            echo "ERROR: fetch completed but produced no repository changes"
+            exit 1
           fi
 
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
-          git add .
+          git add data/
           git commit -m "Updated $(date +'%Y-%m-%d')"
           git push origin main
