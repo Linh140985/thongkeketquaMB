@@ -21,6 +21,9 @@ jobs:
     steps:
       - name: Checkout repo content
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Check whether data is already current
         id: freshness
@@ -83,4 +86,24 @@ jobs:
           git config --global user.name "GitHub Action"
           git add data/
           git commit -m "Updated $(date +'%Y-%m-%d')"
-          git push origin main
+          # Sync before each push in case main changed during this run.
+          for attempt in 1 2 3; do
+            git fetch origin main
+            if ! git rebase origin/main; then
+              git rebase --abort
+              echo "::error::Data changes conflict with newer changes on main. Run the workflow again to fetch fresh data."
+              exit 1
+            fi
+
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "Push failed; syncing and retrying (attempt $attempt of 3)."
+              sleep 5
+            fi
+          done
+
+          echo "::error::Could not push data after 3 attempts. Check the push errors above."
+          exit 1
